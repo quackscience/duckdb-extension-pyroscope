@@ -1,6 +1,8 @@
 extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
+extern crate pyroscope;
+extern crate pyroscope_pprofrs;
 
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
@@ -12,70 +14,108 @@ use libduckdb_sys as ffi;
 use std::{
     error::Error,
     ffi::{c_char, CString},
+    sync::Arc,
+    sync::Mutex,
 };
+use pyroscope::pyroscope::PyroscopeAgentRunning;
+use pyroscope::PyroscopeAgent;
+use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
-#[repr(C)]
-struct HelloBindData {
-    name: *mut c_char,
+// Store just the running agent
+lazy_static::lazy_static! {
+    static ref PYROSCOPE_AGENT: Arc<Mutex<Option<PyroscopeAgent<PyroscopeAgentRunning>>>> = Arc::new(Mutex::new(None));
 }
 
-impl Free for HelloBindData {
+// Empty struct that implements Free for BindData
+#[repr(C)]
+struct EmptyBindData;
+
+impl Free for EmptyBindData {}
+
+// Trace Start implementation
+struct TraceStartVTab;
+
+#[repr(C)]
+struct TraceStartBindData {
+    url: *mut c_char,
+}
+
+#[repr(C)]
+struct TraceStartInitData {
+    done: bool,
+}
+
+impl Free for TraceStartBindData {
     fn free(&mut self) {
         unsafe {
-            if self.name.is_null() {
-                return;
+            if !self.url.is_null() {
+                drop(CString::from_raw(self.url));
             }
-            drop(CString::from_raw(self.name));
         }
     }
 }
 
-#[repr(C)]
-struct HelloInitData {
-    done: bool,
-}
+impl Free for TraceStartInitData {}
 
-struct HelloVTab;
+impl VTab for TraceStartVTab {
+    type InitData = TraceStartInitData;
+    type BindData = TraceStartBindData;
 
-impl Free for HelloInitData {}
-
-impl VTab for HelloVTab {
-    type InitData = HelloInitData;
-    type BindData = HelloBindData;
-
-    unsafe fn bind(bind: &BindInfo, data: *mut HelloBindData) -> Result<(), Box<dyn std::error::Error>> {
-        bind.add_result_column("value", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        let param = bind.get_parameter(0).to_string();
+    unsafe fn bind(bind: &BindInfo, data: *mut TraceStartBindData) -> Result<(), Box<dyn Error>> {
+        bind.add_result_column("status", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        let url = bind.get_parameter(0).to_string();
         unsafe {
-            (*data).name = CString::new(param).unwrap().into_raw();
+            (*data).url = CString::new(url).unwrap().into_raw();
         }
         Ok(())
     }
 
-    unsafe fn init(_: &InitInfo, data: *mut HelloInitData) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn init(_: &InitInfo, data: *mut TraceStartInitData) -> Result<(), Box<dyn Error>> {
         unsafe {
             (*data).done = false;
         }
         Ok(())
     }
 
-    unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
-        let init_info = func.get_init_data::<HelloInitData>();
-        let bind_info = func.get_bind_data::<HelloBindData>();
-
+    unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        let init_info = func.get_init_data::<TraceStartInitData>();
+        let bind_info = func.get_bind_data::<TraceStartBindData>();
+        
         unsafe {
             if (*init_info).done {
                 output.set_len(0);
-            } else {
-                (*init_info).done = true;
-                let vector = output.flat_vector(0);
-                let name = CString::from_raw((*bind_info).name);
-                let result = CString::new(format!("Rusty Quack {} 🐥", name.to_str()?))?;
-                // Can't consume the CString
-                (*bind_info).name = CString::into_raw(name);
-                vector.insert(0, result);
-                output.set_len(1);
+                return Ok(());
             }
+            
+            (*init_info).done = true;
+            
+            let url_cstr = CString::from_raw((*bind_info).url);
+            let url_str = url_cstr.to_str()?;
+            
+            let mut agent_lock = PYROSCOPE_AGENT.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+            if agent_lock.is_some() {
+                let vector = output.flat_vector(0);
+                vector.insert(0, CString::new("Profiling already running")?);
+                output.set_len(1);
+                return Ok(());
+            }
+
+            // Create and start the agent
+            let agent = PyroscopeAgent::builder(url_str, "duckdb-profile")
+                .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
+                .build()
+                .map_err(|e| format!("Failed to create Pyroscope agent: {}", e))?;
+
+            let running_agent = agent.start()
+                .map_err(|e| format!("Failed to start Pyroscope agent: {}", e))?;
+            
+            *agent_lock = Some(running_agent);
+            
+            let vector = output.flat_vector(0);
+            vector.insert(0, CString::new("Profiling started with Pyroscope")?);
+            output.set_len(1);
+            
+            (*bind_info).url = CString::into_raw(url_cstr);
         }
         Ok(())
     }
@@ -85,11 +125,71 @@ impl VTab for HelloVTab {
     }
 }
 
-const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
+// Trace Stop implementation
+struct TraceStopVTab;
 
-#[duckdb_entrypoint_c_api(ext_name = "rusty_quack", min_duckdb_version = "v0.0.1")]
+#[repr(C)]
+struct TraceStopInitData {
+    done: bool,
+}
+
+impl Free for TraceStopInitData {}
+
+impl VTab for TraceStopVTab {
+    type InitData = TraceStopInitData;
+    type BindData = EmptyBindData;
+
+    unsafe fn bind(bind: &BindInfo, _: *mut EmptyBindData) -> Result<(), Box<dyn Error>> {
+        bind.add_result_column("status", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Ok(())
+    }
+
+    unsafe fn init(_: &InitInfo, data: *mut TraceStopInitData) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(func: &FunctionInfo, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        let init_info = func.get_init_data::<TraceStopInitData>();
+        
+        unsafe {
+            if (*init_info).done {
+                output.set_len(0);
+                return Ok(());
+            }
+            
+            (*init_info).done = true;
+            
+            let mut agent_lock = PYROSCOPE_AGENT.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+            
+            if let Some(running_agent) = agent_lock.take() {
+                // shutdown() returns (), so we just call it directly
+                running_agent.shutdown();
+                
+                let vector = output.flat_vector(0);
+                vector.insert(0, CString::new("Profiling stopped successfully")?);
+                output.set_len(1);
+            } else {
+                let vector = output.flat_vector(0);
+                vector.insert(0, CString::new("No profiling session running")?);
+                output.set_len(1);
+            }
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        None
+    }
+}
+
+#[duckdb_entrypoint_c_api(ext_name = "pyroscope", min_duckdb_version = "v0.0.1")]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    con.register_table_function::<HelloVTab>(EXTENSION_NAME)
-        .expect("Failed to register hello table function");
+    con.register_table_function::<TraceStartVTab>("trace_start")
+        .expect("Failed to register trace_start function");
+    con.register_table_function::<TraceStopVTab>("trace_stop")
+        .expect("Failed to register trace_stop function");
     Ok(())
 }
