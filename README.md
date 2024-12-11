@@ -1,3 +1,5 @@
+<img src="https://github.com/user-attachments/assets/46a5c546-7e9b-42c7-87f4-bc8defe674e0" width=250 />
+
 # DuckDB Pyroscope Extension
 This experimental extension adds pyroscope profiling features to DuckDB
 
