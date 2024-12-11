@@ -3,6 +3,8 @@
 # DuckDB Pyroscope Extension
 This experimental extension adds pyroscope profiling features to DuckDB
 
+> For raw `pprof` generation use the [pprof extension](https://github.com/quackscience/duckdb-extension-pprof)
+
 ### Build
 ```
 make configure
