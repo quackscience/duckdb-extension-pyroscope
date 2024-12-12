@@ -28,4 +28,4 @@ D SELECT * FROM trace_stop();
 ## Glory Shot in Pyroscope
 <!-- ![image](https://github.com/user-attachments/assets/1992c8b8-dd29-4343-9a54-88363fa5fe8c) -->
 
-![image](https://github.com/user-attachments/assets/b58e03e5-576e-42dc-a839-52629fdc0ac8)
+![pyroscope_duckdb_large](https://github.com/user-attachments/assets/74fad3ec-3bc3-4880-be4b-8149c5431115)
