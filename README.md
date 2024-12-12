@@ -5,20 +5,19 @@ This experimental extension adds pyroscope profiling features to DuckDB
 
 > For raw `pprof` generation use the [pprof extension](https://github.com/quackscience/duckdb-extension-pprof)
 
-### Build
+### Install
 ```
-make configure
-make debug
+INSTALL pyroscope FROM community;
+LOAD pyroscope;
 ```
 
-### Test
+### Usage
 
 ```sql
----- Load the Extension
-D LOAD './build/debug/pyroscope.duckdb_extension';
-
 ---- Start the tracer, requires backend URL
 D SELECT * FROM trace_start('https://pyroscope:4000');
+
+---- Run a bunch of queries to stream results to Pyroscope/qryn
 
 ---- Stop the tracer
 D SELECT * FROM trace_stop();
