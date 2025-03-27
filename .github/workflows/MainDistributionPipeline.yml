@@ -20,4 +20,4 @@ jobs:
       ci_tools_version: main
       extension_name: pyroscope
       extra_toolchains: rust;python3
-      exclude_archs: 'windows_amd64_rtools;windows_amd64;wasm_threads;wasm_eh;wasm_mvp;linux_amd64_musl;'
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;windows_amd64;wasm_threads;wasm_eh;wasm_mvp;linux_amd64_musl;'
