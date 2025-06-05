@@ -152,7 +152,7 @@ impl VTab for TraceStopVTab {
     }
 }
 
-const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
+// const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
